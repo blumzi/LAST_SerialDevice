@@ -60,13 +60,13 @@ classdef SerialDevice < handle
             end
                         
             if isMATLABReleaseOlderThan("R2022a")
-                throw(MException("OCS:SerialDevice:MatlabRelease", "This class works on release R2022a or newer (not %s)", matlabRelease.Release))
+                throw(MException("OCS:SerialDevice:MatlabRelease", "This class works on release R2022a or newer (current release: %s)", matlabRelease.Release))
             end
 
             Obj.Logger = MsgLogger(...
-                FileName=sprintf('/var/log/ocs/SerialDevice-%s.txt', replace(PortPath, '/', '_')), ...
-                LoadConfig=false, ...
-                Console=false);
+                'FileName', sprintf('/var/log/ocs/SerialDevice-%s.txt', replace(PortPath, '/', '_')), ...
+                'LoadConfig', false, ...
+                'Console', false);
 
             Obj.ExceptionId = 'OCS:SerialCommunicator'; 
             Obj.PortPath = PortPath;
@@ -116,7 +116,7 @@ classdef SerialDevice < handle
 
             Obj.ComponentsName = sprintf("SerialWorker-%s", replace(Obj.WorkerArgs.PortPath, '/', '_'));
 
-            delete(timerfind(Name=Obj.ComponentsName))
+            delete(timerfind('Name', Obj.ComponentsName))
             delete(findJob(parcluster, 'Name', Obj.ComponentsName))
 
             Obj.Job = createJob(parcluster);
@@ -333,7 +333,7 @@ classdef SerialDevice < handle
                 delete(Obj.Job);
             end
 
-            timers = timerfind(Name='WorkerCheckingTimer');
+            timers = timerfind('Name', 'WorkerCheckingTimer');
             for i = 1:numel(timers)
                 stop(timers(i))
                 delete(timers(i))
