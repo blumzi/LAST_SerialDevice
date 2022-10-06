@@ -44,19 +44,19 @@ classdef SerialDevice < handle
         function Obj = SerialDevice(PortPath, Args)
             arguments
                 PortPath                    string;
-                Args.PortSpeed              double = 115200;        % [baud]
-                Args.Timeout                duration;               % [should be duration] to wait for a response (millis)
-                Args.Terminator             string;                 % [char]
-                Args.Interval               duration = seconds(5);  % [should be duration] between status reads (millis)
-                Args.ResponseTime           duration;               % [should be duration] to wait between sending something and getting a response
-                Args.StatusCommand          inst.SerialCommand;     % [string] or array of [string] to be sent for getting the status
-                Args.Validator              function_handle;	    % [func] returns true if the response is vallid, throws otherwise
-                Args.Reader                 function_handle;        % [func] user-specified serial device reader
-                Args.Writer                 function_handle;        % [func] user-specified serial device writer
-                Args.InterCommand           duration;               % [should be duration] to delay between sending a series of commands (millis)
-                Args.ConnectRetries         double;                 % [double] how many times to try to open the serialport (may be Inf)
-                Args.ConnectRetryDelay      duration;               % [double] delay between connect retries (millis)
-                Args.EndOfLoopDelay         duration;               % [double] delay at the end of the loop in the worker (millis)
+                Args.PortSpeed              double = 115200;        % baud rate
+                Args.Timeout                duration;               % duration to wait for a response
+                Args.Terminator             string;                 % same as per serialport
+                Args.Interval               duration = seconds(5);  % between status reads
+                Args.ResponseTime           duration;               % to wait between sending something and getting a response
+                Args.StatusCommand          inst.SerialCommand;     % SerialCommand(s) for getting status from device
+                Args.Validator              function_handle;	    % checks if the device's response is valid, throws exception if not
+                Args.Reader                 function_handle;        % user-specified serial device reader
+                Args.Writer                 function_handle;        % user-specified serial device writer
+                Args.InterCommand           duration;               % duration to delay between sending a series of commands
+                Args.ConnectRetries         double;                 % how many times to try to open the serialport (may be Inf)
+                Args.ConnectRetryDelay      duration;               % delay between connect retries
+                Args.EndOfLoopDelay         duration;               % delay at the end of the loop in the worker
             end
                         
             if isMATLABReleaseOlderThan("R2022a")
