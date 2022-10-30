@@ -1,35 +1,46 @@
 
 classdef SerialWorker < handle
     properties
-        Connected     logical = false;  % the serialport was successfuly connected
-        Monitoring    logical = false;  % periodically get the device's status
-        Device;                         % the actual serialport
+        Connected       logical = false;  % the serialport was successfuly connected
+        Monitoring      logical = false;  % periodically get the device's status
+        Device;                           % the actual serialport
 
-        PortPath      string;           % serialport path
-        PortSpeed     double;           % serialport BaudRate
-        Timeout       duration;         % for serialport.readline() or serialport.read()
-        Terminator    string = "CR";    % serialport.configureTerminator
-        Eol           string = '\r';    % end-of-line string to be discarded
-        Interval      duration;         % between status checks
-        Validator     function_handle;  % validates replies from the serialport
-        Reader        function_handle;  % to be used instead of serialport.readline or serialport.read
-        Writer        function_handle;  % to be used instead of serialport.writeline or serialport.write
-        ResponseTime  duration;         % how long to wait for a reply from the serialport
-        InterCommand  duration;         % delay between multiple commands in the same transaction
-        EndOfLoopDelay duration = milliseconds(500);    % delay at the end of the perpetual worker loop (lets the cpu breathe :-)
+        PortPath        string;           % serialport path
+        PortSpeed       double;           % serialport BaudRate
+        Timeout         duration;         % for serialport.readline() or serialport.read()
+        Terminator      string = "CR";    % serialport.configureTerminator
+        Eol             string = '\r';    % end-of-line string to be discarded
+        Interval        duration;         % between status checks
+        Validator       function_handle;  % validates replies from the serialport
+        Reader          function_handle;  % to be used instead of serialport.readline or serialport.read
+        Writer          function_handle;  % to be used instead of serialport.writeline or serialport.write
+        ResponseTime    duration;         % how long to wait for a reply from the serialport
+        InterCommand    duration;         % delay between multiple commands in the same transaction
+        EndOfLoopDelay  duration = milliseconds(500);    % delay at the end of the perpetual worker loop (lets the cpu breathe :-)
 
-        StatusCommand  inst.SerialCommand   % a series of SerialCommand(s) to be send every 'Interval' to get the device's status
+        StatusCommand   inst.SerialCommand % a series of SerialCommand(s) to be send every 'Interval' to get the device's status
         Store;
-        HasTerminator  logical = false;
+        HasTerminator   logical = false;
     end
 
     properties(Hidden=true)
         ConnectRetries      double = Inf;
         ConnectRetryDelay   duration = seconds(5);
         Locked              logical = false;
-        ExceptionId         string;
+        ExceptionId         string = 'OCS:SerialWorker';
         DeviceIsBusy        logical = false;
         LastInteraction     double;
+    end
+
+    properties(Constant=true)
+        DirectiveKey         string = 'directive';
+        DirectiveResponseKey string = 'directive-response';
+        CommandKey           string = 'command';
+        CommandResponseKey   string = 'command-response';
+        ExceptionKey         string = 'exception';
+
+        DefaultIntervalBetweenStatusReads duration = seconds(15);
+        DefaultReadTimeout duration = seconds(2);
     end
 
     methods
@@ -53,13 +64,6 @@ classdef SerialWorker < handle
 
             Args = WorkerArgs(1);
             Func = "SerialWorker: ";
-        
-            Obj.ExceptionId = 'OCS:SerialWorker';
-      
-            knownports = serialportlist;
-            if isempty(knownports)
-                throw(MException(exceptionId,'No serial ports on this machine'));
-            end
             
             if isfield(Args, 'PortPath');          Obj.PortPath          = Args.PortPath;                   end 
             if isfield(Args, 'PortSpeed');         Obj.PortSpeed         = Args.PortSpeed;                  end            
@@ -75,13 +79,8 @@ classdef SerialWorker < handle
             if isfield(Args, 'ConnectRetries');    Obj.ConnectRetries    = Args.ConnectRetries;             end
             if isfield(Args, 'ConnectRetryDelay'); Obj.ConnectRetryDelay = Args.ConnectRetryDelay;          end
             if isfield(Args, 'EndOfLoopDelay');    Obj.EndOfLoopDelay    = Args.EndOfLoopDelay;             end
+            if isfield(Args, 'Monitoring');        Obj.Monitoring        = Args.Monitoring;                 end
 
-            if isempty(Obj.PortPath)
-                throw(MException(Obj.ExceptionId, "Must supply a 'PortPath' argument"));
-            end
-            if ~ismember(Obj.PortPath, knownports)
-                throw(MException(exceptionId,"Unknown device '%s', must be one of [%s]", Args.portPath, strjoin(knownports, ", ")));
-            end
             Obj.log(Func + "PortPath: '%s'", Obj.PortPath)
                         
             Obj.HasTerminator = ~isempty(Obj.Terminator);
@@ -103,17 +102,21 @@ classdef SerialWorker < handle
                 case 'CR/LF'
                     Obj.Eol = '\r\n';
             end
+            
+            if Obj.Monitoring && numel(Obj.StatusCommand) < 1
+                throw(MException(Obj.ExceptionId, "Must supply at least one 'StatusCommand' when 'Monitoring' is enabled!"));
+            end
 
-            if isempty(Obj.StatusCommand)
-                throw(MException(Obj.ExceptionId, "Must supply a 'StatusCommand'"));
+            if numel(Obj.StatusCommand) > 1
+                Obj.Monitoring = true;
             end
 
             if isempty(Obj.Interval)
-                Obj.Interval = milliseconds(5000);
+                Obj.Interval = Obj.DefaultIntervalBetweenStatusReads;
             end
 
             if isempty(Obj.Timeout)
-                Obj.Timeout = seconds(2);
+                Obj.Timeout = Obj.DefaultReadTimeout;
             end
             Obj.Device.Timeout = seconds(Obj.Timeout);
 
@@ -142,7 +145,7 @@ classdef SerialWorker < handle
                 if Obj.Connected
                     Obj.disconnect
                 end
-                Obj.Store('exception') = ME;
+                Obj.Store(Obj.ExceptionKey) = ME;
                 quit
             end
         end
@@ -159,7 +162,7 @@ classdef SerialWorker < handle
             
             while true
                 
-                if isKey(Obj.Store, 'directive')
+                if isKey(Obj.Store, Obj.DirectiveKey)
                     %
                     % Directives are commands to the worker process (not to the device)
                     % A directive is a structure with two fields:
@@ -168,32 +171,33 @@ classdef SerialWorker < handle
                     %    - if empty:        this is a GET operation
                     %    - if not empty:    this is a SET operation
                     %
-                    directive = Obj.Store('directive');
-                    msg = sprintf("directive: Name: '%s'", directive.Name);
-                    if ~isempty(directive.Value)
-                        msg = msg + sprintf(", Value: '%s'", string(directive.Value));
+                    Directive = Obj.Store(Obj.DirectiveKey);
+                    Msg = sprintf("directive: Name: '%s'", Directive.Name);
+                    if ~isempty(Directive.Value)
+                        Msg = Msg + sprintf(", Value: '%s'", string(Directive.Value));
                     else
-                        msg = msg + sprintf(", Value: '<empty>'");
+                        Msg = Msg + sprintf(", Value: '<empty>'");
                     end
-                    Obj.log(Func + msg);
+                    Obj.log(Func + Msg);
         
-                    if strcmp(directive.Name, 'quit')
+                    if strcmp(Directive.Name, 'quit')
                         if Obj.Connected
                             Obj.disconnect
                         end
-                        remove(Obj.Store, 'directive');
+                        remove(Obj.Store, Obj.DirectiveKey);
                         return % quit worker, Obj should close the worker process
 
-                    elseif strcmp(directive.Name, "connected")
+                    elseif strcmp(Directive.Name, "connected")
 
-                        if isempty(directive.Value)  % get value of 'connected'
-                            Obj.Store('directive-response') = Obj.Connected;
+                        if isempty(Directive.Value)  % get value of 'connected'
+                            Obj.Store(Obj.DirectiveResponseKey) = Obj.Connected;
+                            remove(Obj.Store, Obj.DirectiveKey);
                             continue;
                         end
 
                         for attemptNumber = 1:Obj.ConnectRetries
                             try
-                                if logical(directive.Value)
+                                if Directive.Value
                                     % connected = true
                                     Obj.log(Func + "attempt#%d to connect to '%s' at %d", attemptNumber, Obj.PortPath, Obj.PortSpeed);
                                     Obj.Device = serialport(Obj.PortPath, Obj.PortSpeed);
@@ -216,12 +220,12 @@ classdef SerialWorker < handle
                                         Obj.disconnect
                                     end
                                 end
-                                Obj.Store('directive-response') = Obj.Connected;
+                                Obj.Store(Obj.DirectiveResponseKey) = Obj.Connected;
 
                             catch ME
                                 Obj.log(Func + "attempt#%d failed (error: %s)", attemptNumber, ME.message);
                                 Obj.Connected = false;
-                                Obj.Store('directive-response') = ME;
+                                Obj.Store(Obj.DirectiveResponseKey) = ME;
                             end
 
                             if ~isempty(Obj.ConnectRetryDelay)
@@ -230,49 +234,54 @@ classdef SerialWorker < handle
                         end
 
                         Obj.Store('connected') = Obj.Connected;
-                        Obj.Store('directive-response') = Obj.Connected;
-                        remove(Obj.Store, 'directive');
+                        Obj.Store(Obj.DirectiveResponseKey) = Obj.Connected;
+                        remove(Obj.Store, Obj.DirectiveKey);
                         continue;
 
-                    elseif strcmp(directive.Name, 'BaudRate')      % get/set speed
+                    elseif strcmp(Directive.Name, 'BaudRate')      % get/set speed
                         try
-                            if ~isempty(directive.Value)
-                                if isa(directive.Value, 'string')
-                                    v = str2num(directive.Value);
-                                elseif isa(directive.Value, 'double')
-                                    v = directive.Value;
+                            if ~isempty(Directive.Value)
+                                if isa(Directive.Value, 'string')
+                                    v = str2double(Directive.Value);
+                                elseif isa(Directive.Value, 'double')
+                                    v = Directive.Value;
                                 else
-                                    throw(MException(Obj.ExceptionId, "Bad BaudRate must be either a 'string' or a 'double' (not a '%s')", ...
-                                        class(directive.Value)))
+                                    failDirectiveWithException(MException(Obj.ExceptionId, "Bad BaudRate must be either a 'string' or a 'double' (not a '%s')", class(Directive.Value)))
+                                    continue
                                 end
                                 Obj.Device.BaudRate = v;
                             end
-                            Obj.Store('directive-response') = Obj.Device.BaudRate;
+                            Obj.Store(Obj.DirectiveResponseKey) = Obj.Device.BaudRate;
                         catch ME
-                            Obj.Store('directive-response') = ME;
+                            Obj.Store(Obj.DirectiveResponseKey) = ME;
                         end
-                        remove(Obj.Store, 'directive');
+                        remove(Obj.Store, Obj.DirectiveKey);
                         continue
 
-                    elseif strcmp(directive.Name, 'locked')
-                        if ~isempty(directive.Value) && islogical(directive.Value)
-                            Obj.Locked = directive.Value;
+                    elseif strcmp(Directive.Name, 'locked')
+                        if ~isempty(Directive.Value)
+                            Obj.Locked = Directive.Value;
                         end
-                        Obj.Store('directive-response') = Obj.Locked;
-                        remove(Obj.Store, 'directive')
+                        Obj.Store(Obj.DirectiveResponseKey) = Obj.Locked;
+                        remove(Obj.Store, Obj.DirectiveKey)
                         continue
 
-                    elseif strcmp(directive.Name, 'monitoring')
-                        if ~isempty(directive.Value) && islogical(directive.Value)
-                            Obj.Monitoring = directive.Value;
+                    elseif strcmp(Directive.Name, "monitoring")
+                        if ~isempty(Directive.Value)
+                            if Directive.Value && numel(Obj.StatusCommand) < 1
+                                failDirectiveWithException(MException(Obj.ExceptionId, "Cannot set Monitoring to 'true' while 'StatusCommand' is not set"));
+                                continue
+                            end
+                            Obj.Monitoring = Directive.Value;
+%                             Obj.log(Func + sprintf("monitoring = %d", Obj.Monitoring));
                         end
-                        Obj.Store('directive-response') = Obj.Monitoring;
-                        remove(Obj.Store, 'directive')
+%                         Obj.log(Func + "monitoring2");
+                        Obj.Store(Obj.DirectiveResponseKey) = Obj.Monitoring;
+                        remove(Obj.Store, Obj.DirectiveKey)
                         continue
 
                     else
-                        Obj.Store('directive-response') = MException(Obj.ExceptionId, sprintf("Invalid directive '%s'", directive));
-                        remove(Obj.Store, 'directive');
+                        failDirectiveWithException(MException(Obj.ExceptionId, sprintf("Invalid directive '%s'", Directive)));
                         continue
         
                     end
@@ -284,11 +293,11 @@ classdef SerialWorker < handle
                     % - if there's a pending command, send it to the device
                     % - otherwise, if the status interval has expired, send a status request to the device
                     %
-                    if isKey(Obj.Store, 'command')
+                    if isKey(Obj.Store, Obj.CommandKey)
                         %
                         % Commands are structures with the fields:
                         %  - Commands: array of strings. Will be sent to the device with an (optional) delay in-between
-                        %  - NoReplies: array of logicals. Whether to expect a repply for the respective command
+                        %  - NoReplies: array of logicals. Whether to expect a reply for the respective command
                         %
 
                         if ~Obj.Locked
@@ -298,9 +307,9 @@ classdef SerialWorker < handle
                             end
                         end
 
-                        Obj.Store('command-response') = Obj.deviceTransaction(Obj.Store("command"));
+                        Obj.Store(Obj.CommandResponseKey) = Obj.deviceTransaction(Obj.Store("command"));
                         Obj.LastInteraction = clock;
-                        remove(Obj.Store, 'command');
+                        remove(Obj.Store, Obj.CommandKey);
 
                     else
 
@@ -328,7 +337,7 @@ classdef SerialWorker < handle
                 delete(Obj.Device);
             end
             Obj.Connected = false;
-            remove(Obj.Store, 'directive-response');
+            remove(Obj.Store, Obj.DirectiveResponseKey);
             remove(Obj.Store, 'response');
             remove(Obj.Store, 'connected');
         end
@@ -344,7 +353,11 @@ classdef SerialWorker < handle
 
             Func = "deviceTransaction: ";
             Ncommands = numel(Commands);
-            Ret(1, Ncommands) = inst.SerialResponse;
+            Ret = inst.SerialResponse;
+            for i = 1:Ncommands
+                Ret(i).Value = [];
+                Ret(i).Time = datetime('now');
+            end
 
             if ~Obj.Locked
                 Obj.DeviceIsBusy = true;    % guard ON
@@ -399,13 +412,19 @@ classdef SerialWorker < handle
                     end   
 
                     Ret(Idx) = inst.SerialResponse(Line, datetime('now'));
-                    Obj.log(Func + "command(%d): %15s, reply: '%s' (%s)", Idx, sprintf("'%s'", Command), Ret(Idx).Value, between(Start, datetime('now'), 'time'));
+                    Dt = Ret(Idx).Time - Start;
+                    Dt.Format = "s";
+                    Obj.log(Func + "command(%d): %15s, reply: '%s' (%s)", Idx, sprintf("'%s'", Command), Ret(Idx).Value, Dt);
                 else
                     Ret(Idx) = inst.SerialResponse([], datetime('now'));
-                    Obj.log(Func + "command(%d): %15s (no-reply) (%s)", Idx, sprintf("'%s'", Command), between(Start, datetime('now'), 'time'));
+                    Dt = Ret(Idx).Time - Start;
+                    Dt.Format = "s";
+                    Obj.log(Func + "command(%d): %15s (no-reply) (%s)", Idx, sprintf("'%s'", Command), Dt);
                 end
 
                 if ~isempty(Obj.InterCommand) && Idx ~= Ncommands
+                    Dt = Obj.InterCommand;
+                    Obj.log(Func + "command(%d): %15s waiting InterCommand duration (%s)", Idx, sprintf("'%s'", Command), Dt);
                     pause(seconds(Obj.InterCommand));
                 end
             end
@@ -415,10 +434,16 @@ classdef SerialWorker < handle
             end
         end
 
+        function failDirectiveWithException(Obj, exception)
+            remove(Obj.Store, Obj.DirectiveKey)
+            Obj.Store(Obj.DirectiveResponseKey) = exception;
+        end
+
         function log(Obj, varargin)
             persistent logger;
         
             if isempty(logger)
+                [~,~,~] = mkdir('/var/log/ocs');
                 logger = MsgLogger(...
                     FileName=sprintf('/var/log/ocs/SerialDevice-%s.txt', replace(Obj.PortPath, '/', '_')), ...
                     LoadConfig=false, ...
