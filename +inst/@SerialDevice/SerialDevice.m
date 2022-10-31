@@ -56,13 +56,13 @@ classdef SerialDevice < handle
                 Args.PortSpeed              double = 115200;        % baud rate
                 Args.Timeout                duration;               % duration to wait for a response
                 Args.Terminator             string;                 % same as per serialport
-                Args.Interval               duration = seconds(20); % between status reads
+                Args.InterStatus            duration;               % interval between status reads
                 Args.ResponseTime           duration;               % to wait between sending something and getting a response
                 Args.StatusCommand          inst.SerialCommand;     % SerialCommand(s) for getting status from device
                 Args.Validator              function_handle;	    % checks if the device's response is valid, throws exception if not
                 Args.Reader                 function_handle;        % user-specified serial device reader
                 Args.Writer                 function_handle;        % user-specified serial device writer
-                Args.InterCommand           duration;               % duration to delay between sending a series of commands
+                Args.InterCommand           duration;               % delay between sending a series of commands
                 Args.ConnectRetries         double;                 % how many times to try to open the serialport (may be Inf)
                 Args.ConnectRetryDelay      duration;               % delay between connect retries
                 Args.EndOfLoopDelay         duration;               % delay at the end of the loop in the worker

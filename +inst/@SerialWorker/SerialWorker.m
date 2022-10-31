@@ -1,5 +1,11 @@
 
 classdef SerialWorker < handle
+    properties(Constant=true, Hidden=true)  
+        DefaultInterStatus                duration = seconds(15);
+        DefaultTimeout                    duration = seconds(2);
+        DefaultEndOfLoopDelay             duration = milliseconds(10);
+    end
+
     properties
         Connected       logical = false;  % the serialport was successfuly connected
         Monitoring      logical = false;  % periodically get the device's status
@@ -10,13 +16,13 @@ classdef SerialWorker < handle
         Timeout         duration;         % for serialport.readline() or serialport.read()
         Terminator      string = "CR";    % serialport.configureTerminator
         Eol             string = '\r';    % end-of-line string to be discarded
-        Interval        duration;         % between status checks
+        InterStatus     duration;         % between status checks
         Validator       function_handle;  % validates replies from the serialport
         Reader          function_handle;  % to be used instead of serialport.readline or serialport.read
         Writer          function_handle;  % to be used instead of serialport.writeline or serialport.write
         ResponseTime    duration;         % how long to wait for a reply from the serialport
         InterCommand    duration;         % delay between multiple commands in the same transaction
-        EndOfLoopDelay  duration = milliseconds(500);    % delay at the end of the perpetual worker loop (lets the cpu breathe :-)
+        EndOfLoopDelay  duration;         % delay at the end of the perpetual worker loop (lets the cpu breathe :-)
 
         StatusCommand   inst.SerialCommand % a series of SerialCommand(s) to be send every 'Interval' to get the device's status
         Store;
@@ -38,9 +44,6 @@ classdef SerialWorker < handle
         CommandKey           string = 'command';
         CommandResponseKey   string = 'command-response';
         ExceptionKey         string = 'exception';
-
-        DefaultIntervalBetweenStatusReads duration = seconds(15);
-        DefaultReadTimeout duration = seconds(2);
     end
 
     methods
@@ -50,7 +53,7 @@ classdef SerialWorker < handle
 %     Args.PortSpeed            double = 9600                 % [baud]
 %     Args.Timeout              duration                      % [seconds]
 %     Args.Terminator           string                        % [char]
-%     Args.Interval             duration = milliseconds(20)   % [milliseconds] between status reads
+%     Args.InterStatus          duration = milliseconds(20)   % [milliseconds] between status reads
 %     Args.ResponseTime         duration = seconds(2)         % [milliseconds] to wait between sending something and getting a response
 %     Args.StatusCommand        string                        % [string] to be sent for getting the status
 %     Args.Validator            function_handle               % [func] returns true if the response is vallid, throws otherwise
@@ -69,7 +72,7 @@ classdef SerialWorker < handle
             if isfield(Args, 'PortSpeed');         Obj.PortSpeed         = Args.PortSpeed;                  end            
             if isfield(Args, 'Terminator');        Obj.Terminator        = Args.Terminator;                 end
             if isfield(Args, 'Timeout');           Obj.Timeout           = Args.Timeout;                    end            
-            if isfield(Args, 'Interval');          Obj.Interval          = Args.Interval;                   end            
+            if isfield(Args, 'InterStatus');       Obj.InterStatus       = Args.InterStatus;                end            
             if isfield(Args, 'StatusCommand');     Obj.StatusCommand     = Args.StatusCommand;              end
             if isfield(Args, 'Validator');         Obj.Validator         = Args.Validator;                  end
             if isfield(Args, 'Reader');            Obj.Reader            = Args.Reader;                     end
@@ -78,8 +81,8 @@ classdef SerialWorker < handle
             if isfield(Args, 'InterCommand');      Obj.InterCommand      = Args.InterCommand;               end
             if isfield(Args, 'ConnectRetries');    Obj.ConnectRetries    = Args.ConnectRetries;             end
             if isfield(Args, 'ConnectRetryDelay'); Obj.ConnectRetryDelay = Args.ConnectRetryDelay;          end
-            if isfield(Args, 'EndOfLoopDelay');    Obj.EndOfLoopDelay    = Args.EndOfLoopDelay;             end
             if isfield(Args, 'Monitoring');        Obj.Monitoring        = Args.Monitoring;                 end
+            if isfield(Args, 'EndOfLoopDelay');    Obj.EndOfLoopDelay    = Args.EndOfLoopDelay;             end
 
             Obj.log(Func + "PortPath: '%s'", Obj.PortPath)
                         
@@ -111,12 +114,16 @@ classdef SerialWorker < handle
                 Obj.Monitoring = true;
             end
 
-            if isempty(Obj.Interval)
-                Obj.Interval = Obj.DefaultIntervalBetweenStatusReads;
+            if isempty(Obj.EndOfLoopDelay)
+                Obj.EndOfLoopDelay = Obj.DefaultEndOfLoopDelay;
+            end
+
+            if isempty(Obj.InterStatus)
+                Obj.InterStatus = Obj.DefaultInterStatus;
             end
 
             if isempty(Obj.Timeout)
-                Obj.Timeout = Obj.DefaultReadTimeout;
+                Obj.Timeout = Obj.DefaultTimeout;
             end
             Obj.Device.Timeout = seconds(Obj.Timeout);
 
@@ -313,7 +320,7 @@ classdef SerialWorker < handle
 
                     else
 
-                        if Obj.Monitoring && (isempty(Obj.LastInteraction) || round(etime(clock,Obj.LastInteraction) * 1000) > milliseconds(Obj.Interval))
+                        if Obj.Monitoring && (isempty(Obj.LastInteraction) || round(etime(clock,Obj.LastInteraction) * 1000) > milliseconds(Obj.InterStatus))
                             if Obj.Locked
                                 continue
                             end
