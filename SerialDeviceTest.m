@@ -41,14 +41,15 @@ classdef SerialDeviceTest < handle
     methods
         function Obj = SerialDeviceTest(~)
         
-            Obj.Device = inst.SerialDevice(         ...
-                Obj.Port,                           ...
-                PortSpeed=Obj.OperationalBaudRate,  ...
-                Terminator='CR',                    ...
-                InterStatus=seconds(10),               ...
-                StatusCommand=Obj.StatCommand,      ...
-                Validator=@Obj.validator,           ...
-                InterCommand=milliseconds(10)       ...
+            Obj.Device = inst.SerialDevice(             ...
+                Obj.Port,                               ...
+                PortSpeed=Obj.OperationalBaudRate,      ...
+                Terminator='CR',                        ...
+                InterStatus=seconds(10),                ...
+                StatusCommand=Obj.StatCommand,          ...
+                Validator=@validateXerxesResponse,      ...
+                PortConditioner=@conditionXerxesPort,   ...
+                InterCommand=milliseconds(10)           ...
             );    
 
         end
@@ -78,18 +79,6 @@ classdef SerialDeviceTest < handle
         end
         
         %
-        % Checks that the response from the device has the expected format
-        % Throws an error if input is erroneous
-        %
-        function validator(~, input) 
-            ErrorPrefix = 'e ';
-
-            if startsWith(input, ErrorPrefix)
-                throw(MException("SerialDeviceTester:validator", "input ('%s') starts with '%s'", ErrorPrefix))
-            end
-        end
-
-        %
         % If the device is not at the OperationalBaudRate, go through the
         % motions to bring it there.
         % Send a status command and check for the expected reply.
@@ -97,7 +86,6 @@ classdef SerialDeviceTest < handle
         function tf = probe(Obj)
 
             for tries = 1:3
-                Obj.resetAndInitializeBaudRate
                 try                   
                     Response = Obj.Device.command(Obj.StatCommand);     % try to get a status value
                 catch
@@ -113,24 +101,6 @@ classdef SerialDeviceTest < handle
                 pause(2)
             end
         end
-        
-        %
-        % The Copley procedure for resetting and setting the serial line's BaudRate.
-        %
-        function resetAndInitializeBaudRate(Obj)
-            Obj.log("Resetting '%s' to BaudRate %d ...", Obj.Port, Obj.OperationalBaudRate)
-            Obj.Device.Locked = true;
-            Obj.Device.BaudRate = 1200;
-            Obj.Device.command(inst.SerialCommand(" ", false))
-            pause(0.1)
-            Obj.Device.BaudRate = 9600;
-            pause(0.1)
-            Obj.Device.command(inst.SerialCommand(sprintf("s r0x90 %d", Obj.OperationalBaudRate), false));
-            pause(0.1)
-            Obj.Device.BaudRate = Obj.OperationalBaudRate;
-            Obj.Device.Locked = false;
-            Obj.log("The device connected to '%s' has been initialized to BaudRate %d ", Obj.Port, Obj.OperationalBaudRate)
-        end
 
         function log(Obj, varargin)        
             if isempty(Obj.Logger)
@@ -144,4 +114,41 @@ classdef SerialDeviceTest < handle
             Obj.Logger.msgLog(LogLevel.Debug, varargin{:});
         end
     end
+end
+
+%
+% Checks that the response from the device has the expected format
+% Throws an error if input is erroneous
+%
+function validateXerxesResponse(input) 
+    arguments
+        input string
+    end
+
+    ErrorPrefix = 'e ';
+
+    if startsWith(input, ErrorPrefix)
+        throw(MException("validateXerxesResponse", "input ('%s') starts with '%s'", ErrorPrefix))
+    end
+end
+
+function conditionXerxesPort(sd)
+    arguments
+        sd inst.SerialDevice
+    end
+
+    DesiredBaudRate = 115200;
+
+    sd.log("Resetting '%s' to BaudRate %d ...", sd.PortPath, DesiredBaudRate)
+    sd.Locked = true;
+    sd.BaudRate = 1200;
+    sd.command(inst.SerialCommand(" ", false))
+    pause(0.1)
+    sd.BaudRate = 9600;
+    pause(0.1)
+    sd.command(inst.SerialCommand(sprintf("s r0x90 %d", DesiredBaudRate), false));
+    pause(0.1)
+    sd.BaudRate = DesiredBaudRate;
+    sd.Locked = false;
+    sd.log("The device connected to '%s' has been initialized to BaudRate %d ", sd.PortPath, DesiredBaudRate)
 end
