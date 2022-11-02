@@ -110,7 +110,7 @@ classdef SerialWorker < handle
                 throw(MException(Obj.ExceptionId, "Must supply at least one 'StatusCommand' when 'Monitoring' is enabled!"));
             end
 
-            if numel(Obj.StatusCommand) > 1
+            if numel(Obj.StatusCommand) >= 1
                 Obj.Monitoring = true;
             end
 
