@@ -36,6 +36,7 @@ classdef SerialWorker < handle
         ExceptionId         string = 'OCS:SerialWorker';
         DeviceIsBusy        logical = false;
         LastInteraction     double;
+        Logging             logical = false;
     end
 
     properties(Constant=true)
@@ -273,6 +274,14 @@ classdef SerialWorker < handle
                         remove(Obj.Store, Obj.DirectiveKey)
                         continue
 
+                    elseif strcmp(Directive.Name, 'logging')
+                        if ~isempty(Directive.Value)
+                            Obj.Logging = Directive.Value;
+                        end
+                        Obj.Store(Obj.DirectiveResponseKey) = Obj.Logging;
+                        remove(Obj.Store, Obj.DirectiveKey)
+                        continue
+
                     elseif strcmp(Directive.Name, "monitoring")
                         if ~isempty(Directive.Value)
                             if Directive.Value && numel(Obj.StatusCommand) < 1
@@ -449,6 +458,10 @@ classdef SerialWorker < handle
         function log(Obj, varargin)
             persistent logger;
         
+            if ~Obj.Logging
+                return
+            end
+
             if isempty(logger)
                 Logdir = '/var/log/ocs';
                 [~,~,~] = mkdir(Logdir);

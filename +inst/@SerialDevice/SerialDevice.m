@@ -16,6 +16,7 @@ classdef SerialDevice < handle
         
     properties
         Connected   logical = false
+        Logging     logical = false
     end
 
     properties(Hidden=true)      
@@ -72,6 +73,7 @@ classdef SerialDevice < handle
                 Args.ConnectRetryDelay      duration;               % delay between connect retries
                 Args.EndOfLoopDelay         duration;               % delay at the end of the loop in the worker
                 Args.PortConditioner        function_handle;        % called on serial error, to set reasonable values
+                Args.Logging                logical;                % do/don't log
             end
                         
             if isMATLABReleaseOlderThan("R2022a")
@@ -406,6 +408,13 @@ classdef SerialDevice < handle
             end
         end
 
+        function set.Logging(Obj, Value)
+            if Obj.Connected
+                Obj.directive('logging', Value);
+            end
+            Obj.Logging = Value;
+        end
+
         % Destructor
         function delete(Obj)
             db = dbstack(); Func = string([db(1).name ': ']);
@@ -425,6 +434,9 @@ classdef SerialDevice < handle
         end
 
         function log(Obj, varargin)
+            if ~Obj.Logging
+                return
+            end
             varargin{1} = "[upper] " + varargin{1};
             Obj.Logger.msgLog(LogLevel.Debug, varargin{:});
         end
@@ -541,6 +553,9 @@ classdef SerialDevice < handle
         end
 
         function logWorkerException(Obj, ME, label)
+            if ~Obj.Logging
+                return
+            end
             Obj.log("worker exception: [label: %s] %s:%s", label, ME.identifier, ME.message);
             stk = ME.stack;
             for i = 1:numel(stk)
