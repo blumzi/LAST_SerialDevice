@@ -179,11 +179,11 @@ classdef SerialWorker < handle
                     %    - if not empty:    this is a SET operation
                     %
                     Directive = Obj.Store(Obj.DirectiveKey);
-                    Msg = sprintf("directive: Name: '%s'", Directive.Name);
+                    Msg = 'directive: ';
                     if ~isempty(Directive.Value)
-                        Msg = Msg + sprintf(", Value: '%s'", string(Directive.Value));
+                        Msg = Msg + sprintf("'%s=%s'", Directive.Name, string(Directive.Value));
                     else
-                        Msg = Msg + sprintf(", Value: '<empty>'");
+                        Msg = Msg + sprintf("'%s'", Directive.Name);
                     end
                     Obj.log(Func + Msg);
         
@@ -431,7 +431,7 @@ classdef SerialWorker < handle
 
                 if ~isempty(Obj.InterCommand) && Idx ~= Ncommands
                     Dt = Obj.InterCommand;
-                    Obj.log(Func + "command(%d): %15s waiting InterCommand duration (%s)", Idx, sprintf("'%s'", Command), Dt);
+                    Obj.log(Func + "command(%d): waiting InterCommand duration (%s)", Idx, Dt);
                     pause(seconds(Obj.InterCommand));
                 end
             end

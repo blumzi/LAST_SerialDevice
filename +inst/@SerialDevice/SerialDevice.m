@@ -16,11 +16,6 @@ classdef SerialDevice < handle
         
     properties
         Connected   logical = false
-        Monitoring  logical = false
-        Status
-        BaudRate    double
-        Locked      logical = false
-        Logger
     end
 
     properties(Hidden=true)      
@@ -33,6 +28,16 @@ classdef SerialDevice < handle
         PortPath
         WorkerCheckingTimer timer
         ComponentsName string
+        PortConditioner function_handle
+
+        Monitoring  logical = false
+        Status
+        BaudRate    double
+        Locked      logical = false
+        Logger
+
+        CommandResponseIsAvailable   logical    % set by onValueStoreUpdate for 'command-response'
+        DirectiveResponseIsAvailable logical    % set by onValueStoreUpdate for 'directive-response'
     end
 
     properties(Constant=true,Hidden=true)
@@ -66,6 +71,7 @@ classdef SerialDevice < handle
                 Args.ConnectRetries         double;                 % how many times to try to open the serialport (may be Inf)
                 Args.ConnectRetryDelay      duration;               % delay between connect retries
                 Args.EndOfLoopDelay         duration;               % delay at the end of the loop in the worker
+                Args.PortConditioner        function_handle;        % called on serial error, to set reasonable values
             end
                         
             if isMATLABReleaseOlderThan("R2022a")
@@ -95,6 +101,10 @@ classdef SerialDevice < handle
             if numel(Args.StatusCommand) > 1
                 Obj.Monitoring = true;
                 Args.Mononitoring = true;
+            end
+
+            if isfield(Args, 'PortConditioner')
+                Obj.PortConditioner = Args.PortConditioner;
             end
 
             Obj.PortPath = PortPath;
@@ -146,8 +156,7 @@ classdef SerialDevice < handle
         % Actually tells the worker to connect to the device
         %
         function connect(Obj)
-            Func = dbstack().name;
-            Func = Func + ": ";
+            db = dbstack(); Func = string([db(1).name ': ']);
 
             Obj.ComponentsName = sprintf("SerialWorker-%s", replace(Obj.WorkerArgs.PortPath, '/', '_'));
 
@@ -175,7 +184,7 @@ classdef SerialDevice < handle
             Obj.WorkerCheckingTimer.ExecutionMode = 'fixedRate';
             Obj.WorkerCheckingTimer.BusyMode = 'queue';
             Obj.WorkerCheckingTimer.Period = 5;
-%             start(Obj.WorkerCheckingTimer)
+            start(Obj.WorkerCheckingTimer)
 
             Obj.log(Func + "sending connected=true");
             response = Obj.directive('connected', true);
@@ -183,6 +192,11 @@ classdef SerialDevice < handle
                 throwAsCaller(response);
             elseif isa(response, 'logical')
                 Obj.Connected = response;
+            end
+
+            if ~isempty(Obj.PortConditioner)
+                Obj.log(Func + sprintf("conditioning '%s'", Obj.PortPath));
+                Obj.PortConditioner(Obj);
             end
             
             Obj.log(Func + "connected: %s", string(Obj.Connected));
@@ -194,8 +208,7 @@ classdef SerialDevice < handle
         % 3. Destroys the worker
         %
         function Obj = disconnect(Obj)
-            Func = dbstack().name;
-            Func = Func + ": ";
+            db = dbstack(); Func = string([db(1).name ': ']);
 
             Response = [];
             if Obj.Connected && ~isempty(Obj.Job) && isvalid(Obj.Job)
@@ -230,12 +243,11 @@ classdef SerialDevice < handle
         %
         function Response = directive(Obj, Name, Value)
 
-            Func = dbstack().name;
-            Func = Func + ": ";
+            db = dbstack(); Func = string([db(1).name ': ']);
 
             Directive = inst.SerialDirective;
 
-            DirectiveAndValue = Name;
+            Directive.Name = Name;
             V = string.empty;
             if exist('Value', 'var')
                 Directive.Value = Value;
@@ -246,9 +258,12 @@ classdef SerialDevice < handle
                 elseif isa(Value, 'logical')
                     V = string(logical(Value));
                 end
+                Directive.Value = Value;
             end
-            if ~isempty(V)
-                DirectiveAndValue = sprintf("%s=%s", DirectiveAndValue, V);
+            if isempty(V)
+                DirectiveAndValue = Name;
+            else
+                DirectiveAndValue = sprintf("%s=%s", Name, V);
             end
 
             if isempty(Obj.Job) || ~isvalid(Obj.Job) || Obj.Job.State ~= "running"
@@ -259,26 +274,33 @@ classdef SerialDevice < handle
             if isKey(Obj.Store, Obj.DirectiveResponseKey)
                 remove(Obj.Store, Obj.DirectiveResponseKey); 
             end
-
-            Directive.Name = Name;
-            Directive.Value = Value;
+            Obj.DirectiveResponseIsAvailable = false;
 
             Start = datetime('now');
             Obj.Store(Obj.DirectiveKey) = Directive;
 
-            msg = Func + sprintf(": waiting for response to directive('%s')", DirectiveAndValue);
+            T0 = datetime('now');
             try
-                while ~isKey(Obj.Store, Obj.DirectiveResponseKey)
-                    Obj.log(msg + sprintf(" (valuestore keys: %s)", strjoin(keys(Obj.Store), ", ")));
+                while ~Obj.DirectiveResponseIsAvailable
+                    T1 = datetime('now');
+                    Dt = T1 - T0;
+                    if Dt >= seconds(1)
+                        Obj.log(Func + sprintf(": waiting for response to directive('%s')", DirectiveAndValue));
+                        T0 = T1;
+                    end
                     if isKey(Obj.Store, Obj.ExceptionKey)
-                        Response = Obj.Store(Obj.ExceptionKey);
-                        logAndRemoveWorkerException(Obj, 'directive')
+                        ME = Obj.Store(Obj.ExceptionKey);
+                        Response = ME;
+                        logWorkerException(ME, 'directive');
+                        remove(Obj.Store, Obj.ExceptionKey);
+                        remove(Obj.Store, Obj.DirectiveKey);
                         return
                     end
-                    pause(1);
+                    pause(0.1);
                 end
             catch ME
                 Response = ME;
+                remove(Obj.Store, Obj.DirectiveKey);
                 return
             end
 
@@ -292,12 +314,12 @@ classdef SerialDevice < handle
             elseif isa(Response, 'logical')
                 R = string(logical(Response));
             elseif isa(Response, 'MException')
-                R = sprintf("exception: '%s'", Response.ExceptionId);
+                R = sprintf("exception: '%s'", Response.identifier);
             end
 
             Dt = End - Start;
             Dt.Format = 's';
-            Obj.log(Func + " directive '%s', Value: '%s' (response: '%s') took %s", Name, V, R, Dt);
+            Obj.log(Func + " directive '%s', response: '%s', took %s", DirectiveAndValue, R, Dt);
             remove(Obj.Store, Obj.DirectiveResponseKey); 
             if isa(Response, 'MException')
                 throwAsCaller(Response);
@@ -308,14 +330,13 @@ classdef SerialDevice < handle
         % Sends a command to the worker.  The worker will send the command
         % to the device.
         %
-        function Out = command(Obj, Command)
+        function Response = command(Obj, Command)
             arguments
                 Obj
                 Command inst.SerialCommand
             end
 
-            Func = dbstack().name;
-            Func = Func + ": ";
+            db = dbstack(); Func = string([db(1).name ': ']);
 
             if ~Obj.Connected
                 throw(MException(Obj.ExceptionId, Func + 'Not connected'));
@@ -325,17 +346,19 @@ classdef SerialDevice < handle
                 throw(MException(this.ExceptionId, Func + 'Empty store'));
             end
 
-            if isKey(Obj.Store, {Obj.CommandKey})
+            if isKey(Obj.Store, Obj.CommandKey)
                 Obj.log('%s: worker is busy', Func)
                 return
             end
 
+            remove(Obj.Store, Obj.CommandResponseKey);
+            Obj.CommandResponseIsAvailable = false;
             Start = datetime('now');
             Obj.Store(Obj.CommandKey) = Command;
-            while ~isKey(Obj.Store, Obj.CommandResponseKey) % wait for response
-                pause(0.5);
+            while ~Obj.CommandResponseIsAvailable % wait for response
+                pause(0.1);
             end
-            Out = Obj.Store(Obj.CommandResponseKey);
+            Response = Obj.Store(Obj.CommandResponseKey);
             End = datetime('now');
             Dt = End - Start;
             Dt.Format = 's';
@@ -343,9 +366,9 @@ classdef SerialDevice < handle
             remove(Obj.Store, Obj.CommandResponseKey);
 
             % If any response was an exception, rethrow it
-            for i = 1:numel(Out)
-                if isa(Out(i).Value, 'MException')
-                    throwAsCaller(Out(i).Value);
+            for i = 1:numel(Response)
+                if isa(Response(i).Value, 'MException')
+                    throwAsCaller(Response(i).Value);
                 end
             end
 
@@ -355,8 +378,8 @@ classdef SerialDevice < handle
         %
         % Reads the device's status response from the worker
         %
-        function Out = get.Status(Obj)
-            MillisToWait duration = milliseconds(100);
+        function Response = get.Status(Obj)
+            MillisToWait = milliseconds(100);
 
             if ~Obj.Connected
                 throw(MException(Obj.ExceptionId, "Not connected"))
@@ -372,10 +395,10 @@ classdef SerialDevice < handle
             end
 
             if isKey(Obj.Store, Obj.StatusKey)
-                Out = Obj.Store(Obj.StatusKey);
-                for i = 1:numel(Out)
-                    if isa(Out(i).Value, 'MException')
-                        throwAsCaller(Out(i).Value)
+                Response = Obj.Store(Obj.StatusKey);
+                for i = 1:numel(Response)
+                    if isa(Response(i).Value, 'MException')
+                        throwAsCaller(Response(i).Value)
                     end
                 end
             else
@@ -385,8 +408,7 @@ classdef SerialDevice < handle
 
         % Destructor
         function delete(Obj)
-            Func = dbstack().name;
-            Func = Func + ': ';
+            db = dbstack(); Func = string([db(1).name ': ']);
 
             Obj.log(Func + 'entered');
             if isvalid(Obj.Job)
@@ -415,7 +437,7 @@ classdef SerialDevice < handle
         function onTimer(Obj)
             persistent TimerInCallback
 
-            Func = 'onTimer: ';
+            db = dbstack(); Func = string([db(1).name ': ']);
 
             if ~isempty(TimerInCallback)
                 if TimerInCallback
@@ -438,13 +460,11 @@ classdef SerialDevice < handle
             elseif ~isvalid(Obj.Job)
                 Reason = "~isvalid(Obj.Job)";
             elseif ~strcmp(Obj.Job.State, 'running')
-                Reason = "Obj.Job.State != running";
+                Reason = sprintf("Obj.Job (Id=%d) is not running , (State=%s)", Obj.Job.ID, Obj.Job.State);
             end
 
             if ~isempty(Reason)
-                Obj.log(Func + sprintf("The worker job looks dead (reason: %s), reconnecting", Reason))
-                Obj.disconnect;
-                Obj.connect
+                Obj.reconnect(Func + sprintf("The worker job looks dead (reason: %s)", Reason));
                 TimerInCallback = false;
                 return
             end
@@ -454,23 +474,20 @@ classdef SerialDevice < handle
             if isempty(task)
                 Reason = "isempty(task)";
             elseif ~strcmp(task.State, 'running')
-                Reason = "task.State != running";
+                Reason = sprintf("task is not 'running' (State: '%s')", task.State);
             end
 
             if ~isempty(Reason)
-                Obj.log(Func + sprintf("The worker task looks dead (reason: %s) reconnecting", Reason))
-                Obj.Connected = false;
-                Obj.disconnect;
-                Obj.connect;
+                Obj.reconnect(Func + sprintf("The worker job looks dead (reason: %s)", Reason));
                 TimerInCallback = false;
                 return
             end
 
             if isKey(Obj.Store, Obj.ExceptionKey)
-                Obj.logAndRemoveWorkerException('onTimer')
+                Obj.logWorkerException(ObjStore(Obj.ExceptionKey), Func)
+                remove(Obj.Store, Obj.ExceptionKey);
+                % throw ?!?
             end
-        
-            %Obj.log(Func + "all is well")
 
             TimerInCallback = false;
         end
@@ -479,35 +496,56 @@ classdef SerialDevice < handle
 
     methods(Hidden)
         %
+        % Handle exceptions occurring in the worker process.
+        %
+        % Some exceptions may pertain to a serial line error (timeout,
+        %  disconnection, etc.), in which case we may elect to reconnect.
+        % Other exceptions may peratin to syntax errors, etc.
+        %
+        function handleWorkerException(Obj, ME)
+            Obj.logWorkerException(Obj, ME, Func)
+            Obj.WorkerException = ME;
+            if strcmp(ME.identifier, "transportlib:transport:invalidConnectionState") && ...
+                    strcmp(ME.message, "Invalid operation. Object must be connected to the serial port.")
+                Obj.reconnect(sprintf("Seems like port '%s' has been disconnected", Obj.PortPath));
+            end
+        end
+
+        function reconnect(Obj, reason)
+            db = dbstack(); Func = string([db(1).name ': ']);
+
+            Obj.log(Func + reason);
+            cancel(Obj.Job);
+            delete(Obj.Job);
+            pause(2)
+            Obj.connect
+        end
+
+        %
         % Client callback whenever the worker updates data in the Value Store
         %
         function onValueStoreUpdate(Obj, Store, Key)
-            Func = dbstack().name;
-            Func = Func + ': ';
-
-            if strcmp(Key, Obj.ExceptionKey)
-                ME = Store(Key);
-                Obj.logAndRemoveWorkerException(Obj, Func)
-                Obj.WorkerException = ME;
-                if strcmp(ME.identifier, "transportlib:transport:invalidConnectionState") && ...
-                        strcmp(ME.message, "Invalid operation. Object must be connected to the serial port.")
-                    Obj.log(Func + "Seems like '%s' has been disconnected. Reconnecting ...", Obj.PortPath)
-                    cancel(Obj.Job);
-                    delete(Obj.Job);
-                    pause(2)
-                    Obj.connect
+            if strcmp(Key, Obj.CommandResponseKey)
+                Obj.CommandResponseIsAvailable = true;
+            elseif strcmp(Key, Obj.DirectiveResponseKey)
+                Obj.DirectiveResponseIsAvailable = true;
+            elseif strcmp(Key, Obj.ExceptionKey)
+                if ~isKey(Store, Obj.DirectiveKey) && ~isKey(Store, Obj.CommandKey)
+                    %
+                    % An excepption occurred while no directive or command
+                    %  were in progress
+                    %
+                    handleWorkerException(Store(Key));
                 end
             end
         end
 
-        function logAndRemoveWorkerException(Obj, label)
-            ME = Obj.Store(Obj.ExceptionKey);
-            Obj.log("worker exception: [%s] %s:%s", label, ME.identifier, ME.message);
+        function logWorkerException(Obj, ME, label)
+            Obj.log("worker exception: [label: %s] %s:%s", label, ME.identifier, ME.message);
             stk = ME.stack;
             for i = 1:numel(stk)
                 Obj.log(" %-35s %s:%d", stk(i).name, stk(i).file, stk(i).line);
             end
-            remove(Obj.Store, Obj.ExceptionKey);
         end
     end
 

@@ -45,22 +45,21 @@ classdef SerialDeviceTest < handle
                 Obj.Port,                           ...
                 PortSpeed=Obj.OperationalBaudRate,  ...
                 Terminator='CR',                    ...
-                Interval=seconds(15),               ...
+                InterStatus=seconds(10),               ...
                 StatusCommand=Obj.StatCommand,      ...
                 Validator=@Obj.validator,           ...
-                InterCommand=milliseconds(150),     ...
-                Monitoring=true                     ...
-                );        
+                InterCommand=milliseconds(10)       ...
+            );    
+
         end
 
         function startTest(Obj)
-            Func = dbstack().name;
-            Func = Func + ": ";
+            Func = string([dbstack().name ': ']);
 
             Obj.log(Func + '================= Test started =====================')
 
             Obj.Device.connect()
-            msg = sprintf("The device connected to '%s' at BaudRate %d is", Obj.Port, Obj.OperationalBaudRate);
+            msg = sprintf("The device connected to '%s' at BaudRate %d is ", Obj.Port, Obj.OperationalBaudRate);
             if Obj.probe
                 Obj.log(msg + "operational")
                 Obj.Device.Monitoring = true;
@@ -70,8 +69,7 @@ classdef SerialDeviceTest < handle
         end
 
         function endTest(Obj)
-            Func = dbstack().name;
-            Func = Func + ": ";
+            Func = string([dbstack().name ': ']);
 
             Obj.Device.log(Func + '================= Test ended =====================')
             Obj.Device.Monitoring = false;
@@ -83,14 +81,12 @@ classdef SerialDeviceTest < handle
         % Checks that the response from the device has the expected format
         % Throws an error if input is erroneous
         %
-        function validator(Obj, input) 
-            Func = 'validator: ';
+        function validator(~, input) 
             ErrorPrefix = 'e ';
 
             if startsWith(input, ErrorPrefix)
                 throw(MException("SerialDeviceTester:validator", "input ('%s') starts with '%s'", ErrorPrefix))
             end
-            %Obj.log(Func + "input: '%s' is OK", input)
         end
 
         %
